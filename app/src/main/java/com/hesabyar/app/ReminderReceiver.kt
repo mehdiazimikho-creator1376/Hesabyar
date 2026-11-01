@@ -1,119 +1,86 @@
 package com.hesabyar.app
 
-import android.app.AlarmManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import java.util.Calendar
 
-object ReminderScheduler {
+class ReminderReceiver : BroadcastReceiver() {
 
-    fun scheduleAll(context: Context) {
-        val db = InstallmentDb(context)
+    override fun onReceive(context: Context, intent: Intent) {
 
-        try {
-            db.all().forEach {
-                schedule(context, it)
-            }
-        } finally {
-            db.close()
-        }
-    }
+        val id = intent.getLongExtra("id", 0L)
+        val type = intent.getIntExtra("type", 0)
+        val title = intent.getStringExtra("title") ?: "قسط شما"
 
-    fun schedule(context: Context, item: Installment) {
-        val now = System.currentTimeMillis()
+        val channelId = "hesabyar_reminders"
 
-        val due = Calendar.getInstance().apply {
-            timeInMillis = item.dueMillis
-        }
+        val manager = context.getSystemService(
+            Context.NOTIFICATION_SERVICE
+        ) as NotificationManager
 
-        val reminder = Calendar.getInstance().apply {
-            timeInMillis = item.dueMillis
-            add(Calendar.DAY_OF_MONTH, -item.reminderDays)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "یادآوری اقساط",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            manager.createNotificationChannel(channel)
         }
 
-        val nextDue = nextFutureMonth(item.dueMillis, now)
-
-        val nextReminder = Calendar.getInstance().apply {
-            timeInMillis = nextDue
-            add(Calendar.DAY_OF_MONTH, -item.reminderDays)
-        }
-
-        val chosenDue = if (item.dueMillis > now) {
-            item.dueMillis
+        val message = if (type == 0) {
+            "موعد پرداخت قسط «$title» نزدیک است."
         } else {
-            nextDue
+            "امروز موعد پرداخت قسط «$title» است."
         }
 
-        val chosenReminder = if (reminder.timeInMillis > now) {
-            reminder.timeInMillis
-        } else {
-            nextReminder.timeInMillis
-        }
-
-        setAlarm(context, item.id, chosenReminder, 0, item.title)
-        setAlarm(context, item.id, chosenDue, 1, item.title)
-    }
-
-    private fun nextFutureMonth(
-        original: Long,
-        now: Long
-    ): Long {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = original
-        }
-
-        while (calendar.timeInMillis <= now) {
-            calendar.add(Calendar.MONTH, 1)
-        }
-
-        return calendar.timeInMillis
-    }
-
-    private fun setAlarm(
-        context: Context,
-        id: Long,
-        time: Long,
-        type: Int,
-        title: String
-    ) {
-        val intent = Intent(
+        val openApp = PendingIntent.getActivity(
             context,
-            ReminderReceiver::class.java
-        ).apply {
-            putExtra("id", id)
-            putExtra("type", type)
-            putExtra("title", title)
-        }
-
-        val pending = PendingIntent.getBroadcast(
-            context,
-            (id * 10 + type).toInt(),
-            intent,
+            id.toInt(),
+            Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or
                 PendingIntent.FLAG_IMMUTABLE
         )
 
-        val alarm = context.getSystemService(
-            Context.ALARM_SERVICE
-        ) as AlarmManager
-
-        if (
-            Build.VERSION.SDK_INT >= 31 &&
-            !alarm.canScheduleExactAlarms()
-        ) {
-            alarm.setAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                time,
-                pending
-            )
+        val builder = if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(context, channelId)
         } else {
-            alarm.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                time,
-                pending
+            Notification.Builder(context)
+        }
+
+        val notification = builder
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("یادآوری حساب‌یار")
+            .setContentText(message)
+            .setStyle(
+                Notification.BigTextStyle().bigText(message)
             )
+            .setAutoCancel(true)
+            .setContentIntent(openApp)
+            .build()
+
+        manager.notify(
+            (id * 10 + type).toInt(),
+            notification
+        )
+
+        // پس از اعلان روز سررسید، یادآوری ماه بعد تنظیم می‌شود.
+        if (type == 1) {
+            val db = InstallmentDb(context)
+
+            try {
+                db.all()
+                    .firstOrNull { it.id == id }
+                    ?.let {
+                        ReminderScheduler.schedule(context, it)
+                    }
+            } finally {
+                db.close()
+            }
         }
     }
 }
